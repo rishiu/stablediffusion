@@ -19,7 +19,8 @@ git clone https://github.com/justinpinkney/stable-diffusion.git
 cd stable-diffusion
 mkdir -p models/ldm/stable-diffusion-v1
 wget https://huggingface.co/lambdalabs/stable-diffusion-image-conditioned/resolve/main/sd-clip-vit-l14-img-embed_ema_only.ckpt -O models/ldm/stable-diffusion-v1/sd-clip-vit-l14-img-embed_ema_only.ckpt
-scripts/gradio_variations.py
+pip install -r requirements.txt
+python scripts/gradio_variations.py
 ```
 
 Trained by [Justin Pinkney](https://www.justinpinkney.com) ([@Buntworthy](https://twitter.com/Buntworthy)) at [Lambda](https://lambdalabs.com/)
