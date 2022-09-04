@@ -23,4 +23,8 @@ pip install -r requirements.txt
 python scripts/gradio_variations.py
 ```
 
+Then you should see this:
+
+[![](assets/gradio_variations.jpeg)](https://twitter.com/Buntworthy/status/1565704770056294400)
+
 Trained by [Justin Pinkney](https://www.justinpinkney.com) ([@Buntworthy](https://twitter.com/Buntworthy)) at [Lambda](https://lambdalabs.com/)
