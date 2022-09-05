@@ -74,6 +74,31 @@ def main(
     return output_ims
 
 
+description = \
+"""Generate variations on an input image using a fine-tuned version of Stable Diffision.
+Trained by [Justin Pinkney](https://www.justinpinkney.com) ([@Buntworthy](https://twitter.com/Buntworthy)) at [Lambda](https://lambdalabs.com/)
+
+__Get the [code](https://github.com/justinpinkney/stable-diffusion) and [model](https://huggingface.co/lambdalabs/stable-diffusion-image-conditioned).__
+
+![](https://raw.githubusercontent.com/justinpinkney/stable-diffusion/main/assets/im-vars-thin.jpg)
+
+"""
+
+article = \
+"""
+## How does this work?
+
+The normal Stable Diffusion model is trained to be conditioned on text input. This version has had the original text encoder (from CLIP) removed, and replaced with
+the CLIP _image_ encoder instead. So instead of generating images based a text input, images are generated to match CLIP's embedding of the image.
+This creates images which have the same rough style and content, but different details, in particular the composition is generally quite different.
+This is a totally different approach to the img2img script of the original Stable Diffusion and gives very different results.
+
+The model was fine tuned on the [LAION aethetics v2 6+ dataset](https://laion.ai/blog/laion-aesthetics/) to accept the new conditioning.
+Training was done on 4xA6000 GPUs on [Lambda GPU Cloud](https://lambdalabs.com/service/gpu-cloud).
+More details on the method and training will come in a future blog post.
+"""
+
+
 def run_demo(
     device_idx=0,
     ckpt="models/ldm/stable-diffusion-v1/sd-clip-vit-l14-img-embed_ema_only.ckpt",
@@ -89,24 +114,30 @@ def run_demo(
         gr.Slider(0, 25, value=3, step=1, label="cfg scale"),
         gr.Slider(1, 4, value=1, step=1, label="Number images"),
         gr.Checkbox(True, label="plms"),
-        gr.Slider(5, 250, value=25, step=5, label="steps"),
+        gr.Slider(5, 50, value=25, step=5, label="steps"),
     ]
     output = gr.Gallery(label="Generated variations")
-    output.style(height="auto", grid=2)
+    output.style(grid=2)
 
     fn_with_model = partial(main, model, device)
     fn_with_model.__name__ = "fn_with_model"
 
+    examples = [
+        ["assets/im-examples/vermeer.jpg", 3, 1, True, 25],
+        ["assets/im-examples/matisse.jpg", 3, 1, True, 25],
+    ]
+
     demo = gr.Interface(
         fn=fn_with_model,
         title="Stable Diffusion Image Variations",
-        description="Generate variations on an input image using a fine-tuned version of Stable Diffision",
-        article="TODO",
+        description=description,
+        article=article,
         inputs=inputs,
         outputs=output,
+        examples=examples,
+        allow_flagging="never",
         )
-    # demo.queue()
-    demo.launch(share=False, server_name="0.0.0.0")
+    demo.launch(enable_queue=True, share=True)
 
 if __name__ == "__main__":
     fire.Fire(run_demo)
