@@ -1,6 +1,6 @@
 logs/
 dump/
-examples/
+im-examples/
 outputs/
 flagged/
 *.egg-info
