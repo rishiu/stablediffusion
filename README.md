@@ -1,13 +1,33 @@
 # Experiments with Stable Diffusion
 
+This repository extends and adds to the [original training repo](https://github.com/pesser/stable-diffusion) for Stable Diffusion.
+
+Currently it adds:
+
+- [Fine tuning](#fine-tuning)
+- [Image variations](#image-variations)
+- [Conversion to Huggingface Diffusers](scripts/convert_sd_to_diffusers.py)
+
+## Fine tuning
+
+Makes it easy to fine tune Stable Diffusion on your own dataset. For example generating new Pokemon from text:
+
+![](assets/pokemontage.jpg)
+
+> Girl with a pearl earring, Cute Obama creature, Donald Trump, Boris Johnson, Totoro, Hello Kitty
+
+
+For a step by step guide see the [Lambda Labs examples repo](https://github.com/LambdaLabsML/examples).
+
 ## Image variations
 
-[![](assets/img-vars.jpg)](https://twitter.com/Buntworthy/status/1561703483316781057)
+![](assets/im-vars-thin.jpg)
 
-Try it out in colab: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1JqNbI_kDq_Gth2MIYdsphgNgyGIJxBgB?usp=sharing)
+[![Open Demo](https://img.shields.io/badge/%CE%BB-Open%20Demo-blueviolet)](https://47725.gradio.app/)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1JqNbI_kDq_Gth2MIYdsphgNgyGIJxBgB?usp=sharing)
+[![Open in Spaces](https://img.shields.io/badge/%F0%9F%A4%97-Open%20in%20Spaces-orange)]()
 
-
-_TODO describe in more detail_
+For more details on the Image Variation model see the [model card](https://huggingface.co/lambdalabs/stable-diffusion-image-conditioned).
 
 - Get access to a Linux machine with a decent NVIDIA GPU (e.g. on [Lambda GPU Cloud](https://lambdalabs.com/service/gpu-cloud))
 - Clone this repo
