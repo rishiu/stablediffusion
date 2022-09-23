@@ -1,9 +1,8 @@
 import torch
 import argparse
 
-# orig_path = "logs/2022-09-02T06-46-25_pokemon_pokemon/checkpoints/epoch=000142.ckpt"
-# out_name = "pokemon-ema-only.ckpt"
 if __name__ == "__main__":
+    # Make a version of the checkpoint with only ema weights (around 4GB)
     parser = argparse.ArgumentParser()
     parser.add_argument("--original_ckpt", help="full size checkpoint file")
     parser.add_argument("--output_path", help="filename for ema only checkpoint")
