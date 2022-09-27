@@ -277,6 +277,7 @@ class ProjectedFrozenCLIPEmbedder(AbstractEncoder):
 class FrozenCLIPImageEmbedder(AbstractEncoder):
     """
         Uses the CLIP image encoder.
+        Not actually frozen...
         """
     def __init__(
             self,
