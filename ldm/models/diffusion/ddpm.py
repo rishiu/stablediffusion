@@ -496,6 +496,7 @@ class LatentDiffusion(DDPM):
                  conditioning_key=None,
                  scale_factor=1.0,
                  scale_by_std=False,
+                 unet_trainable=True,
                  *args, **kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -510,6 +511,7 @@ class LatentDiffusion(DDPM):
         super().__init__(conditioning_key=conditioning_key, *args, **kwargs)
         self.concat_mode = concat_mode
         self.cond_stage_trainable = cond_stage_trainable
+        self.unet_trainable = unet_trainable
         self.cond_stage_key = cond_stage_key
         try:
             self.num_downs = len(first_stage_config.params.ddconfig.ch_mult) - 1
@@ -1394,14 +1396,17 @@ class LatentDiffusion(DDPM):
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        params = list(self.model.parameters())
-        # FIXME JP
-        # params = []
+        if self.unet_trainable:
+            params = list(self.model.parameters())
+        else:
+            params = []
+
+        # TODO allow certain parts trainables
         # from ldm.modules.attention import CrossAttention
         # for n, m in self.model.named_modules():
             # if isinstance(m, CrossAttention) and n.endswith('attn2'):
                 # params.extend(m.parameters())
-        # END FIXME JP
+        # END JP
         if self.cond_stage_trainable:
             print(f"{self.__class__.__name__}: Also optimizing conditioner params!")
             params = params + list(self.cond_stage_model.parameters())

@@ -10,11 +10,15 @@ from ldm.util import instantiate_from_config
 from datasets import load_dataset
 
 class FolderData(Dataset):
-    def __init__(self, root_dir, caption_file, image_transforms, ext="jpg") -> None:
+    def __init__(self, root_dir, caption_file=None, image_transforms=[], ext="jpg") -> None:
         self.root_dir = Path(root_dir)
-        with open(caption_file, "rt") as f:
-            captions = json.load(f)
-        self.captions = captions
+        self.default_caption = ""
+        if caption_file is not None:
+            with open(caption_file, "rt") as f:
+                captions = json.load(f)
+            self.captions = captions
+        else:
+            self.captions = None
 
         self.paths = list(self.root_dir.rglob(f"*.{ext}"))
         image_transforms = [instantiate_from_config(tt) for tt in image_transforms]
@@ -26,16 +30,26 @@ class FolderData(Dataset):
         # assert all(['full/' + str(x.name) in self.captions for x in self.paths])
 
     def __len__(self):
-        return len(self.captions.keys())
+        if self.captions is not None:
+            return len(self.captions.keys())
+        else:
+            return len(self.paths)
 
     def __getitem__(self, index):
-        chosen = list(self.captions.keys())[index]
-        im = Image.open(self.root_dir/chosen)
+        if self.captions is not None:
+            chosen = list(self.captions.keys())[index]
+            caption = self.captions[chosen]
+            if caption is None:
+                caption = self.default_caption
+            im = Image.open(self.root_dir/chosen)
+        else:
+            im = Image.open(self.paths[index])
+
         im = self.process_im(im)
-        caption = self.captions[chosen]
-        if caption is None:
-            caption = "old book illustration"
-        return {"jpg": im, "txt": caption}
+        data = {"image": im}
+        if self.captions is not None:
+            data["txt"] = caption
+        return data
 
     def process_im(self, im):
         im = im.convert("RGB")

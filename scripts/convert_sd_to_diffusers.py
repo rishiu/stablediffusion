@@ -562,31 +562,7 @@ def copy_ema_weights(checkpoint, config):
 
     return checkpoint
 
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--checkpoint_path", default=None, type=str, required=True, help="Path to the checkpoint to convert."
-    )
-
-    parser.add_argument(
-        "--original_config_file",
-        default=None,
-        type=str,
-        required=True,
-        help="The YAML config file corresponding to the original architecture.",
-    )
-
-    parser.add_argument(
-        "--dump_path", default=None, type=str, required=True, help="Path to the output model."
-    )
-
-    parser.add_argument(
-        "--use_ema", action="store_true", help="use EMA weights for conversion",
-    )
-
-    args = parser.parse_args()
+def main(args):
 
     original_config = OmegaConf.load(args.original_config_file)
 
@@ -634,3 +610,28 @@ if __name__ == "__main__":
     )
     pipe.save_pretrained(args.dump_path)
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--checkpoint_path", default=None, type=str, required=True, help="Path to the checkpoint to convert."
+    )
+
+    parser.add_argument(
+        "--original_config_file",
+        default=None,
+        type=str,
+        required=True,
+        help="The YAML config file corresponding to the original architecture.",
+    )
+
+    parser.add_argument(
+        "--dump_path", default=None, type=str, required=True, help="Path to the output model."
+    )
+
+    parser.add_argument(
+        "--use_ema", action="store_true", help="use EMA weights for conversion",
+    )
+
+    args = parser.parse_args()
+    main(args)
