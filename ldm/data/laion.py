@@ -219,10 +219,12 @@ class WebDataModuleFromConfig(pl.LightningDataModule):
 
 
 from ldm.modules.image_degradation import degradation_fn_bsr_light
+import cv2
 
 class AddLR(object):
-    def __init__(self, factor):
+    def __init__(self, factor, output_size):
         self.factor = factor
+        self.output_size = output_size
 
     def pt2np(self, x):
         x = ((x+1.0)*127.5).clamp(0, 255).to(dtype=torch.uint8).detach().cpu().numpy()
@@ -236,6 +238,7 @@ class AddLR(object):
         # sample['jpg'] is tensor hwc in [-1, 1] at this point
         x = self.pt2np(sample['jpg'])
         x = degradation_fn_bsr_light(x, sf=self.factor)['image']
+        x = cv2.resize(x, (self.output_size, self.output_size), interpolation=2)
         x = self.np2pt(x)
         sample['lr'] = x
         return sample

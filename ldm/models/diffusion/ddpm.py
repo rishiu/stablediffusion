@@ -26,6 +26,7 @@ from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianD
 from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, AutoencoderKL
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.modules.attention import CrossAttention
 
 
 __conditioning_keys__ = {'concat': 'c_concat',
@@ -1396,17 +1397,18 @@ class LatentDiffusion(DDPM):
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        if self.unet_trainable:
+        params = []
+        if self.unet_trainable == "attn":
+            print("Training only unet attention layers")
+            for n, m in self.model.named_modules():
+                if isinstance(m, CrossAttention) and n.endswith('attn2'):
+                    params.extend(m.parameters())
+        elif self.unet_trainable is True or self.unet_trainable == "all":
+            print("Training the full unet")
             params = list(self.model.parameters())
         else:
-            params = []
+            raise ValueError(f"Unrecognised setting for unet_trainable: {self.unet_trainable}")
 
-        # TODO allow certain parts trainables
-        # from ldm.modules.attention import CrossAttention
-        # for n, m in self.model.named_modules():
-            # if isinstance(m, CrossAttention) and n.endswith('attn2'):
-                # params.extend(m.parameters())
-        # END JP
         if self.cond_stage_trainable:
             print(f"{self.__class__.__name__}: Also optimizing conditioner params!")
             params = params + list(self.cond_stage_model.parameters())
