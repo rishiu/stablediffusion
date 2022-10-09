@@ -307,6 +307,9 @@ class FrozenCLIPImageEmbedder(AbstractEncoder):
 
     def forward(self, x):
         # x is assumed to be in range [-1,1]
+        if isinstance(x, list):
+            # [""] denotes condition dropout for ucg
+            return torch.zeros(1, 768, device=self.device)
         return self.model.encode_image(self.preprocess(x)).float()
 
     def encode(self, im):

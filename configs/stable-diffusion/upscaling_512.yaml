@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.0e-04
+  base_learning_rate: 1.0e-05
   target: ldm.models.diffusion.ddpm.LatentUpscaleDiffusion
   params:
     linear_start: 0.00085
@@ -9,7 +9,7 @@ model:
     timesteps: 1000
     first_stage_key: "jpg"
     cond_stage_key: "txt"
-    image_size: 32
+    image_size: 64
     channels: 4
     cond_stage_trainable: false   # Note: different from the one we trained before
     conditioning_key: "hybrid-adm"
@@ -53,7 +53,7 @@ model:
     scheduler_config: # 10000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
       params:
-        warm_up_steps: [ 10000 ] # NOTE for resuming. use 10000 if starting from scratch
+        warm_up_steps: [ 5000 ] # NOTE for resuming. use 10000 if starting from scratch
         cycle_lengths: [ 10000000000000 ] # incredibly large number to prevent corner cases
         f_start: [ 1.e-6 ]
         f_max: [ 1. ]
@@ -63,7 +63,7 @@ model:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         num_classes: 1000
-        image_size: 16 # unused
+        image_size: 32 # unused
         in_channels: 8
         out_channels: 4
         model_channels: 320
@@ -108,9 +108,9 @@ model:
 data:
   target: ldm.data.laion.WebDataModuleFromConfig
   params:
-    tar_base: "pipe:ssh -v -i ~/.ssh/id_rsa jpinkney@104.171.201.154 cat /mnt/data_rome/laion/improved_aesthetics_6plus/ims"
-    batch_size: 48
-    num_workers: 8
+    tar_base: "pipe:ssh -i ~/.ssh/id_rsa jpinkney@104.171.201.154 cat /mnt/data_rome/laion/improved_aesthetics_6plus/ims"
+    batch_size: 3
+    num_workers: 2
     multinode: True
     train:
       shards: '{00000..01209}.tar'
@@ -119,16 +119,16 @@ data:
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
-          size: 256
+          size: 512
           interpolation: 3
       - target: torchvision.transforms.RandomCrop
         params:
-          size: 256
+          size: 512
       postprocess:
         target: ldm.data.laion.AddLR
         params:
           factor: 4
-          output_size: 256
+          output_size: 512
 
     # NOTE use enough shards to avoid empty validation loops in workers
     validation:
@@ -138,16 +138,16 @@ data:
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
-          size: 256
+          size: 512
           interpolation: 3
       - target: torchvision.transforms.CenterCrop
         params:
-          size: 256
+          size: 512
       postprocess:
         target: ldm.data.laion.AddLR
         params:
-          factor: 1
-          output_size: 256
+          factor: 4
+          output_size: 512
 
 
 lightning:
@@ -161,7 +161,7 @@ lightning:
     image_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 2000
+        batch_frequency: 1000
         max_images: 4
         increase_log_steps: False
         log_first_step: False
@@ -178,4 +178,4 @@ lightning:
     benchmark: True
     val_check_interval: 5000000  # really sorry
     num_sanity_val_steps: 0
-    accumulate_grad_batches: 1
+    accumulate_grad_batches: 4

@@ -24,6 +24,13 @@ from ldm.util import instantiate_from_config
 MULTINODE_HACKS = False
 
 
+def modify_weights(w, scale = 1e-6):
+    """Modify weights to accomodate concatenation to unet"""
+    extra_w = scale*torch.randn_like(w)
+    new_w = torch.cat((w, extra_w), dim=1)
+    return new_w
+
+
 def get_parser(**parser_kwargs):
     def str2bool(v):
         if isinstance(v, bool):
@@ -665,6 +672,21 @@ if __name__ == "__main__":
             if "state_dict" in old_state:
                 print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
                 old_state = old_state["state_dict"]
+
+            #Check if we need to port weights from 4ch input to 8ch
+            in_filters_load = old_state["model.diffusion_model.input_blocks.0.0.weight"]
+            new_state = model.state_dict()
+            in_filters_current = new_state["model.diffusion_model.input_blocks.0.0.weight"]
+            if in_filters_current.shape != in_filters_load.shape:
+                print("Modifying weights to double number of input channels")
+                keys_to_change = [
+                    "model.diffusion_model.input_blocks.0.0.weight",
+                    "model_ema.diffusion_modelinput_blocks00weight",
+                ]
+                scale = 1e-8
+                for k in keys_to_change:
+                    old_state[k] = modify_weights(old_state[k], scale=scale)
+
             m, u = model.load_state_dict(old_state, strict=False)
             if len(m) > 0:
                 print("missing keys:")

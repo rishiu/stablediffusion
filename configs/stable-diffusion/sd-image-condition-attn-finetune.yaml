@@ -1,6 +1,6 @@
 model:
-  base_learning_rate: 1.0e-04
-  target: ldm.models.diffusion.ddpm.LatentUpscaleDiffusion
+  base_learning_rate: 1.0e-05
+  target: ldm.models.diffusion.ddpm.LatentDiffusion
   params:
     linear_start: 0.00085
     linear_end: 0.0120
@@ -8,52 +8,19 @@ model:
     log_every_t: 200
     timesteps: 1000
     first_stage_key: "jpg"
-    cond_stage_key: "txt"
-    image_size: 32
+    cond_stage_key: "jpg"
+    image_size: 64
     channels: 4
     cond_stage_trainable: false   # Note: different from the one we trained before
-    conditioning_key: "hybrid-adm"
+    unet_trainable: attn
+    conditioning_key: crossattn
     monitor: val/loss_simple_ema
     scale_factor: 0.18215
-    low_scale_key: "lr"
-
-    low_scale_config:
-      target: ldm.modules.encoders.modules.LowScaleEncoder
-      params:
-        scale_factor: 0.18215
-        linear_start: 0.00085
-        linear_end: 0.0120
-        timesteps: 1000
-        max_noise_level: 100
-        output_size: null
-        model_config:
-          target: ldm.models.autoencoder.AutoencoderKL
-          params:
-            embed_dim: 4
-            monitor: val/rec_loss
-            ckpt_path: "models/first_stage_models/kl-f8/model.ckpt"
-            ddconfig:
-              double_z: true
-              z_channels: 4
-              resolution: 256
-              in_channels: 3
-              out_ch: 3
-              ch: 128
-              ch_mult:
-                - 1
-                - 2
-                - 4
-                - 4
-              num_res_blocks: 2
-              attn_resolutions: [ ]
-              dropout: 0.0
-            lossconfig:
-              target: torch.nn.Identity
 
     scheduler_config: # 10000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
       params:
-        warm_up_steps: [ 10000 ] # NOTE for resuming. use 10000 if starting from scratch
+        warm_up_steps: [ 10000 ]
         cycle_lengths: [ 10000000000000 ] # incredibly large number to prevent corner cases
         f_start: [ 1.e-6 ]
         f_max: [ 1. ]
@@ -62,9 +29,8 @@ model:
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        num_classes: 1000
-        image_size: 16 # unused
-        in_channels: 8
+        image_size: 32 # unused
+        in_channels: 4
         out_channels: 4
         model_channels: 320
         attention_resolutions: [ 4, 2, 1 ]
@@ -82,7 +48,6 @@ model:
       params:
         embed_dim: 4
         monitor: val/rec_loss
-        ckpt_path: "models/first_stage_models/kl-f8/model.ckpt"
         ddconfig:
           double_z: true
           z_channels: 4
@@ -102,16 +67,17 @@ model:
           target: torch.nn.Identity
 
     cond_stage_config:
-      target: ldm.modules.encoders.modules.FrozenCLIPEmbedder
+      target: ldm.modules.encoders.modules.FrozenCLIPImageEmbedder
 
 
 data:
   target: ldm.data.laion.WebDataModuleFromConfig
   params:
-    tar_base: "pipe:ssh -v -i ~/.ssh/id_rsa jpinkney@104.171.201.154 cat /mnt/data_rome/laion/improved_aesthetics_6plus/ims"
-    batch_size: 48
-    num_workers: 8
+    tar_base: "pipe:ssh -i ~/.ssh/id_rsa jpinkney@104.171.201.154 cat /mnt/data_rome/laion/improved_aesthetics_6plus/ims"
+    batch_size: 4
+    num_workers: 2
     multinode: True
+    min_size: 256
     train:
       shards: '{00000..01209}.tar'
       shuffle: 10000
@@ -119,63 +85,51 @@ data:
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
-          size: 256
+          size: 512
           interpolation: 3
       - target: torchvision.transforms.RandomCrop
         params:
-          size: 256
-      postprocess:
-        target: ldm.data.laion.AddLR
-        params:
-          factor: 4
-          output_size: 256
+          size: 512
 
     # NOTE use enough shards to avoid empty validation loops in workers
     validation:
-      shards: '{00000..00012}.tar'
+      shards: '{00000..00008}.tar -'
       shuffle: 0
       image_key: jpg
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
-          size: 256
+          size: 512
           interpolation: 3
       - target: torchvision.transforms.CenterCrop
         params:
-          size: 256
-      postprocess:
-        target: ldm.data.laion.AddLR
-        params:
-          factor: 1
-          output_size: 256
+          size: 512
 
 
 lightning:
-  find_unused_parameters: False
-
+  find_unused_parameters: false
   modelcheckpoint:
     params:
       every_n_train_steps: 5000
-
   callbacks:
     image_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 2000
-        max_images: 4
+        batch_frequency: 1000
+        max_images: 8
         increase_log_steps: False
-        log_first_step: False
+        log_first_step: True
         log_images_kwargs:
           use_ema_scope: False
           inpaint: False
           plot_progressive_rows: False
           plot_diffusion_rows: False
-          N: 4
+          N: 8
           unconditional_guidance_scale: 3.0
           unconditional_guidance_label: [""]
 
   trainer:
     benchmark: True
-    val_check_interval: 5000000  # really sorry
+    val_check_interval: 5000000 # really sorry
     num_sanity_val_steps: 0
-    accumulate_grad_batches: 1
+    accumulate_grad_batches: 4
