@@ -143,6 +143,47 @@ class FrozenT5Embedder(AbstractEncoder):
     def encode(self, text):
         return self(text)
 
+from ldm.thirdp.psp.id_loss import IDFeatures
+import kornia.augmentation as K
+
+class FrozenFaceEncoder(AbstractEncoder):
+    def __init__(self, model_path, augment=False):
+        super().__init__()
+        self.loss_fn = IDFeatures(model_path)
+        # face encoder is frozen
+        for p in self.loss_fn.parameters():
+            p.requires_grad = False
+        # Mapper is trainable
+        self.mapper = torch.nn.Linear(512, 768)
+        p = 0.25
+        if augment:
+            self.augment = K.AugmentationSequential(
+                K.RandomHorizontalFlip(p=0.5),
+                K.RandomEqualize(p=p),
+                K.RandomPlanckianJitter(p=p),
+                K.RandomPlasmaBrightness(p=p),
+                K.RandomPlasmaContrast(p=p),
+                K.ColorJiggle(0.02, 0.2, 0.2, p=p),
+            )
+        else:
+            self.augment = False
+
+    def forward(self, img):
+        if isinstance(img, list):
+            # Uncondition
+            return torch.zeros((1, 1, 768), device=self.mapper.weight.device)
+
+        if self.augment is not None:
+            # Transforms require 0-1
+            img = self.augment((img + 1)/2)
+            img = 2*img - 1
+
+        feat = self.loss_fn(img, crop=True)
+        feat = self.mapper(feat.unsqueeze(1))
+        return feat
+
+    def encode(self, img):
+        return self(img)
 
 class FrozenCLIPEmbedder(AbstractEncoder):
     """Uses the CLIP transformer encoder for text (from huggingface)"""
@@ -172,6 +213,54 @@ class FrozenCLIPEmbedder(AbstractEncoder):
     def encode(self, text):
         return self(text)
 
+import torch.nn.functional as F
+from transformers import CLIPVisionModel
+class ClipImageProjector(AbstractEncoder):
+    """
+        Uses the CLIP image encoder.
+        """
+    def __init__(self, version="openai/clip-vit-large-patch14", max_length=77):  # clip-vit-base-patch32
+        super().__init__()
+        self.model = CLIPVisionModel.from_pretrained(version)
+        self.model.train()
+        self.max_length = max_length   # TODO: typical value?
+        self.antialias = True
+        self.mapper = torch.nn.Linear(1024, 768)
+        self.register_buffer('mean', torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False)
+        self.register_buffer('std', torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False)
+        null_cond = self.get_null_cond(version, max_length)
+        self.register_buffer('null_cond', null_cond)
+
+    @torch.no_grad()
+    def get_null_cond(self, version, max_length):
+        device = self.mean.device
+        embedder = FrozenCLIPEmbedder(version=version, device=device, max_length=max_length)
+        null_cond = embedder([""])
+        return null_cond
+
+    def preprocess(self, x):
+        # Expects inputs in the range -1, 1
+        x = kornia.geometry.resize(x, (224, 224),
+                                   interpolation='bicubic',align_corners=True,
+                                   antialias=self.antialias)
+        x = (x + 1.) / 2.
+        # renormalize according to clip
+        x = kornia.enhance.normalize(x, self.mean, self.std)
+        return x
+
+    def forward(self, x):
+        if isinstance(x, list):
+            return self.null_cond
+        # x is assumed to be in range [-1,1]
+        x = self.preprocess(x)
+        outputs = self.model(pixel_values=x)
+        last_hidden_state = outputs.last_hidden_state
+        last_hidden_state = self.mapper(last_hidden_state)
+        return F.pad(last_hidden_state, [0,0, 0,self.max_length-last_hidden_state.shape[1], 0,0])
+
+    def encode(self, im):
+        return self(im)
+
 class ProjectedFrozenCLIPEmbedder(AbstractEncoder):
     def __init__(self, version="openai/clip-vit-large-patch14", device="cuda", max_length=77):  # clip-vit-base-patch32
         super().__init__()
@@ -188,21 +277,20 @@ class ProjectedFrozenCLIPEmbedder(AbstractEncoder):
 class FrozenCLIPImageEmbedder(AbstractEncoder):
     """
         Uses the CLIP image encoder.
-        Not actually frozen...
+        Not actually frozen... If you want that set cond_stage_trainable=False in cfg
         """
     def __init__(
             self,
             model='ViT-L/14',
             jit=False,
-            device='cuda' if torch.cuda.is_available() else 'cpu',
+            device='cpu',
             antialias=False,
         ):
         super().__init__()
         self.model, _ = clip.load(name=model, device=device, jit=jit)
-        self.device = device
-
+        # We don't use the text part so delete it
+        del self.model.transformer
         self.antialias = antialias
-
         self.register_buffer('mean', torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False)
         self.register_buffer('std', torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False)
 
@@ -218,6 +306,10 @@ class FrozenCLIPImageEmbedder(AbstractEncoder):
 
     def forward(self, x):
         # x is assumed to be in range [-1,1]
+        if isinstance(x, list):
+            # [""] denotes condition dropout for ucg
+            device = self.model.visual.conv1.weight.device
+            return torch.zeros(1, 768, device=device)
         return self.model.encode_image(self.preprocess(x)).float()
 
     def encode(self, im):

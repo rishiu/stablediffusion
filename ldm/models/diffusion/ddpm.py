@@ -26,6 +26,7 @@ from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianD
 from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, AutoencoderKL
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.modules.attention import CrossAttention
 
 
 __conditioning_keys__ = {'concat': 'c_concat',
@@ -496,6 +497,7 @@ class LatentDiffusion(DDPM):
                  conditioning_key=None,
                  scale_factor=1.0,
                  scale_by_std=False,
+                 unet_trainable=True,
                  *args, **kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -510,6 +512,7 @@ class LatentDiffusion(DDPM):
         super().__init__(conditioning_key=conditioning_key, *args, **kwargs)
         self.concat_mode = concat_mode
         self.cond_stage_trainable = cond_stage_trainable
+        self.unet_trainable = unet_trainable
         self.cond_stage_key = cond_stage_key
         try:
             self.num_downs = len(first_stage_config.params.ddconfig.ch_mult) - 1
@@ -1394,14 +1397,18 @@ class LatentDiffusion(DDPM):
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        params = list(self.model.parameters())
-        # FIXME JP
-        # params = []
-        # from ldm.modules.attention import CrossAttention
-        # for n, m in self.model.named_modules():
-            # if isinstance(m, CrossAttention) and n.endswith('attn2'):
-                # params.extend(m.parameters())
-        # END FIXME JP
+        params = []
+        if self.unet_trainable == "attn":
+            print("Training only unet attention layers")
+            for n, m in self.model.named_modules():
+                if isinstance(m, CrossAttention) and n.endswith('attn2'):
+                    params.extend(m.parameters())
+        elif self.unet_trainable is True or self.unet_trainable == "all":
+            print("Training the full unet")
+            params = list(self.model.parameters())
+        else:
+            raise ValueError(f"Unrecognised setting for unet_trainable: {self.unet_trainable}")
+
         if self.cond_stage_trainable:
             print(f"{self.__class__.__name__}: Also optimizing conditioner params!")
             params = params + list(self.cond_stage_model.parameters())
