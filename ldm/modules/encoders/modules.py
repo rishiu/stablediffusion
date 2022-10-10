@@ -277,21 +277,20 @@ class ProjectedFrozenCLIPEmbedder(AbstractEncoder):
 class FrozenCLIPImageEmbedder(AbstractEncoder):
     """
         Uses the CLIP image encoder.
-        Not actually frozen...
+        Not actually frozen... If you want that set cond_stage_trainable=False in cfg
         """
     def __init__(
             self,
             model='ViT-L/14',
             jit=False,
-            device='cuda' if torch.cuda.is_available() else 'cpu',
+            device='cpu',
             antialias=False,
         ):
         super().__init__()
         self.model, _ = clip.load(name=model, device=device, jit=jit)
-        self.device = device
-
+        # We don't use the text part so delete it
+        del self.model.transformer
         self.antialias = antialias
-
         self.register_buffer('mean', torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False)
         self.register_buffer('std', torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False)
 
@@ -309,7 +308,8 @@ class FrozenCLIPImageEmbedder(AbstractEncoder):
         # x is assumed to be in range [-1,1]
         if isinstance(x, list):
             # [""] denotes condition dropout for ucg
-            return torch.zeros(1, 768, device=self.device)
+            device = self.model.visual.conv1.weight.device
+            return torch.zeros(1, 768, device=device)
         return self.model.encode_image(self.preprocess(x)).float()
 
     def encode(self, im):
