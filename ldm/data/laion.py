@@ -222,9 +222,10 @@ from ldm.modules.image_degradation import degradation_fn_bsr_light
 import cv2
 
 class AddLR(object):
-    def __init__(self, factor, output_size):
+    def __init__(self, factor, output_size, image_key="jpg"):
         self.factor = factor
         self.output_size = output_size
+        self.image_key = image_key
 
     def pt2np(self, x):
         x = ((x+1.0)*127.5).clamp(0, 255).to(dtype=torch.uint8).detach().cpu().numpy()
@@ -236,7 +237,7 @@ class AddLR(object):
 
     def __call__(self, sample):
         # sample['jpg'] is tensor hwc in [-1, 1] at this point
-        x = self.pt2np(sample['jpg'])
+        x = self.pt2np(sample[self.image_key])
         x = degradation_fn_bsr_light(x, sf=self.factor)['image']
         x = cv2.resize(x, (self.output_size, self.output_size), interpolation=2)
         x = self.np2pt(x)
