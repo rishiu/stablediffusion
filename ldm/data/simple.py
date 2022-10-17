@@ -1,4 +1,6 @@
+from typing import Dict
 import numpy as np
+from omegaconf import DictConfig, ListConfig
 import torch
 from torch.utils.data import Dataset
 from pathlib import Path
@@ -9,10 +11,40 @@ from einops import rearrange
 from ldm.util import instantiate_from_config
 from datasets import load_dataset
 
+def make_multi_folder_data(paths, **kwargs):
+    """Make a concat dataset from multiple folders
+    Don't suport captions yet
+
+    If paths is a list, that's ok, if it's a Dict interpret it as:
+    k=folder v=n_times to repeat that
+    """
+    list_of_paths = []
+    if isinstance(paths, (Dict, DictConfig)):
+        for folder_path, repeats in paths.items():
+            list_of_paths.extend([folder_path]*repeats)
+        paths = list_of_paths
+
+    datasets = [FolderData(p, **kwargs) for p in paths]
+    return torch.utils.data.ConcatDataset(datasets)
+
 class FolderData(Dataset):
-    def __init__(self, root_dir, caption_file=None, image_transforms=[], ext="jpg") -> None:
+    def __init__(self,
+        root_dir,
+        caption_file=None,
+        image_transforms=[],
+        ext="jpg",
+        default_caption="",
+        postprocess=None,
+        ) -> None:
+        """Create a dataset from a folder of images.
+        If you pass in a root directory it will be searched for images
+        ending in ext (ext can be a list)
+        """
         self.root_dir = Path(root_dir)
-        self.default_caption = ""
+        self.default_caption = default_caption
+        if isinstance(postprocess, DictConfig):
+            postprocess = instantiate_from_config(postprocess)
+        self.postprocess = postprocess
         if caption_file is not None:
             with open(caption_file, "rt") as f:
                 ext = Path(caption_file).suffix.lower()
@@ -28,8 +60,13 @@ class FolderData(Dataset):
         else:
             self.captions = None
 
+        if not isinstance(ext, (tuple, list, ListConfig)):
+            ext = [ext]
+
         # Only used if there is no caption file
-        self.paths = list(self.root_dir.rglob(f"*.{ext}"))
+        self.paths = []
+        for e in ext:
+            self.paths.extend(list(self.root_dir.rglob(f"*.{e}")))
         image_transforms = [instantiate_from_config(tt) for tt in image_transforms]
         image_transforms.extend([transforms.ToTensor(),
                                  transforms.Lambda(lambda x: rearrange(x * 2. - 1., 'c h w -> h w c'))])
@@ -47,7 +84,7 @@ class FolderData(Dataset):
     def __getitem__(self, index):
         if self.captions is not None:
             chosen = list(self.captions.keys())[index]
-            caption = self.captions[chosen]
+            caption = self.captions.get(chosen, None)
             if caption is None:
                 caption = self.default_caption
             im = Image.open(self.root_dir/chosen)
@@ -58,6 +95,11 @@ class FolderData(Dataset):
         data = {"image": im}
         if self.captions is not None:
             data["txt"] = caption
+        else:
+            data["txt"] = self.default_caption
+
+        if self.postprocess is not None:
+            data = self.postprocess(data)
         return data
 
     def process_im(self, im):
