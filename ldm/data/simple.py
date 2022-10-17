@@ -15,11 +15,20 @@ class FolderData(Dataset):
         self.default_caption = ""
         if caption_file is not None:
             with open(caption_file, "rt") as f:
-                captions = json.load(f)
+                ext = Path(caption_file).suffix.lower()
+                if ext == ".json":
+                    captions = json.load(f)
+                elif ext == ".jsonl":
+                    lines = f.readlines()
+                    lines = [json.loads(x) for x in lines]
+                    captions = {x["file_name"]: x["text"].strip("\n") for x in lines}
+                else:
+                    raise ValueError(f"Unrecognised format: {ext}")
             self.captions = captions
         else:
             self.captions = None
 
+        # Only used if there is no caption file
         self.paths = list(self.root_dir.rglob(f"*.{ext}"))
         image_transforms = [instantiate_from_config(tt) for tt in image_transforms]
         image_transforms.extend([transforms.ToTensor(),
