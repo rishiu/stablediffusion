@@ -222,10 +222,11 @@ from ldm.modules.image_degradation import degradation_fn_bsr_light
 import cv2
 
 class AddLR(object):
-    def __init__(self, factor, output_size, image_key="jpg"):
+    def __init__(self, factor, output_size, initial_size=None, image_key="jpg"):
         self.factor = factor
         self.output_size = output_size
         self.image_key = image_key
+        self.initial_size = initial_size
 
     def pt2np(self, x):
         x = ((x+1.0)*127.5).clamp(0, 255).to(dtype=torch.uint8).detach().cpu().numpy()
@@ -238,12 +239,36 @@ class AddLR(object):
     def __call__(self, sample):
         # sample['jpg'] is tensor hwc in [-1, 1] at this point
         x = self.pt2np(sample[self.image_key])
+        if self.initial_size is not None:
+            x = cv2.resize(x, (self.initial_size, self.initial_size), interpolation=2)
         x = degradation_fn_bsr_light(x, sf=self.factor)['image']
         x = cv2.resize(x, (self.output_size, self.output_size), interpolation=2)
         x = self.np2pt(x)
         sample['lr'] = x
         return sample
 
+class AddBW(object):
+    def __init__(self, image_key="jpg"):
+        self.image_key = image_key
+
+    def pt2np(self, x):
+        x = ((x+1.0)*127.5).clamp(0, 255).to(dtype=torch.uint8).detach().cpu().numpy()
+        return x
+
+    def np2pt(self, x):
+        x = torch.from_numpy(x)/127.5-1.0
+        return x
+
+    def __call__(self, sample):
+        # sample['jpg'] is tensor hwc in [-1, 1] at this point
+        x = sample[self.image_key]
+        w = torch.rand(3, device=x.device)
+        w /= w.sum()
+        out = torch.einsum('hwc,c->hw', x, w)
+
+        # Keep as 3ch so we can pass to encoder, also we might want to add hints
+        sample['lr'] = out.unsqueeze(-1).tile(1,1,3)
+        return sample
 
 class AddMask(PRNGMixin):
     def __init__(self, mode="512train", p_drop=0.):
