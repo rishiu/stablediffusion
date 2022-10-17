@@ -11,7 +11,7 @@ from einops import rearrange
 from ldm.util import instantiate_from_config
 from datasets import load_dataset
 
-def make_multi_folder_data(paths, **kwargs):
+def make_multi_folder_data(paths, caption_files=None, **kwargs):
     """Make a concat dataset from multiple folders
     Don't suport captions yet
 
@@ -20,11 +20,16 @@ def make_multi_folder_data(paths, **kwargs):
     """
     list_of_paths = []
     if isinstance(paths, (Dict, DictConfig)):
+        assert caption_files is None, \
+            "Caption files not yet supported for repeats"
         for folder_path, repeats in paths.items():
             list_of_paths.extend([folder_path]*repeats)
         paths = list_of_paths
 
-    datasets = [FolderData(p, **kwargs) for p in paths]
+    if caption_files is not None:
+        datasets = [FolderData(p, caption_file=c, **kwargs) for (p, c) in zip(paths, caption_files)]
+    else:
+        datasets = [FolderData(p, **kwargs) for p in paths]
     return torch.utils.data.ConcatDataset(datasets)
 
 class FolderData(Dataset):
