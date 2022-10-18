@@ -4,6 +4,7 @@ This repository extends and adds to the [original training repo](https://github.
 
 Currently it adds:
 
+- [Imagic](notebooks/imagic.ipynb)
 - [Fine tuning](#fine-tuning)
 - [Image variations](#image-variations)
 - [Conversion to Huggingface Diffusers](scripts/convert_sd_to_diffusers.py)
