@@ -40,6 +40,7 @@ class FolderData(Dataset):
         ext="jpg",
         default_caption="",
         postprocess=None,
+        return_paths=False,
         ) -> None:
         """Create a dataset from a folder of images.
         If you pass in a root directory it will be searched for images
@@ -47,6 +48,7 @@ class FolderData(Dataset):
         """
         self.root_dir = Path(root_dir)
         self.default_caption = default_caption
+        self.return_paths = return_paths
         if isinstance(postprocess, DictConfig):
             postprocess = instantiate_from_config(postprocess)
         self.postprocess = postprocess
@@ -72,13 +74,13 @@ class FolderData(Dataset):
         self.paths = []
         for e in ext:
             self.paths.extend(list(self.root_dir.rglob(f"*.{e}")))
-        image_transforms = [instantiate_from_config(tt) for tt in image_transforms]
+        if isinstance(image_transforms, ListConfig):
+            image_transforms = [instantiate_from_config(tt) for tt in image_transforms]
         image_transforms.extend([transforms.ToTensor(),
                                  transforms.Lambda(lambda x: rearrange(x * 2. - 1., 'c h w -> h w c'))])
         image_transforms = transforms.Compose(image_transforms)
         self.tform = image_transforms
 
-        # assert all(['full/' + str(x.name) in self.captions for x in self.paths])
 
     def __len__(self):
         if self.captions is not None:
@@ -87,17 +89,23 @@ class FolderData(Dataset):
             return len(self.paths)
 
     def __getitem__(self, index):
+        data = {}
         if self.captions is not None:
             chosen = list(self.captions.keys())[index]
             caption = self.captions.get(chosen, None)
             if caption is None:
                 caption = self.default_caption
-            im = Image.open(self.root_dir/chosen)
+            filename = self.root_dir/chosen
         else:
-            im = Image.open(self.paths[index])
+            filename = self.paths[index]
 
+        if self.return_paths:
+            data["path"] = str(filename)
+
+        im = Image.open(filename)
         im = self.process_im(im)
-        data = {"image": im}
+        data["image"] = im
+
         if self.captions is not None:
             data["txt"] = caption
         else:
@@ -105,6 +113,7 @@ class FolderData(Dataset):
 
         if self.postprocess is not None:
             data = self.postprocess(data)
+
         return data
 
     def process_im(self, im):
