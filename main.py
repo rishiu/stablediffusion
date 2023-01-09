@@ -32,6 +32,10 @@ def modify_weights(w, scale = 1e-6):
     extra_w = scale*torch.randn_like(w)
     new_w = torch.cat((w, extra_w), dim=1)
     return new_w
+    
+def modify_proj_weights(w):
+    new_w = w[:,:,None,None]
+    return new_w
 
 
 def get_parser(**parser_kwargs):
@@ -140,6 +144,12 @@ def get_parser(**parser_kwargs):
         default=True,
         help="scale base-lr by ngpu * batch_size * n_accumulate",
     )
+    parser.add_argument(
+        "--depth_cond",
+        type=str2bool,
+        default=False,
+        help="whether to condition on depth or not"
+    )
     return parser
 
 
@@ -224,9 +234,11 @@ class DataModuleFromConfig(pl.LightningDataModule):
             init_fn = worker_init_fn
         else:
             init_fn = None
+        print(self.num_workers)
+        print(self.batch_size)
         return DataLoader(self.datasets["train"], batch_size=self.batch_size,
                           num_workers=self.num_workers, shuffle=False if is_iterable_dataset else True,
-                          worker_init_fn=init_fn)
+                          worker_init_fn=init_fn, pin_memory=True, prefetch_factor=16)
 
     def _val_dataloader(self, shuffle=False):
         if isinstance(self.datasets['validation'], Txt2ImgIterableBaseDataset) or self.use_worker_init_fn:
@@ -280,12 +292,13 @@ class SetupCallback(Callback):
             ckpt_path = os.path.join(self.ckptdir, "last.ckpt")
             trainer.save_checkpoint(ckpt_path)
 
-    def on_pretrain_routine_start(self, trainer, pl_module):
+    def on_fit_start(self, trainer, pl_module):
         if trainer.global_rank == 0:
             # Create logdirs and save configs
             os.makedirs(self.logdir, exist_ok=True)
             os.makedirs(self.ckptdir, exist_ok=True)
             os.makedirs(self.cfgdir, exist_ok=True)
+            print(self.ckptdir)
 
             if "callbacks" in self.lightning_config:
                 if 'metrics_over_trainsteps_checkpoint' in self.lightning_config['callbacks']:
@@ -295,6 +308,7 @@ class SetupCallback(Callback):
             if MULTINODE_HACKS:
                 import time
                 time.sleep(5)
+            ## TODO: figure out what the issue is here
             OmegaConf.save(self.config,
                            os.path.join(self.cfgdir, "{}-project.yaml".format(self.now)))
 
@@ -324,7 +338,7 @@ class ImageLogger(Callback):
         self.batch_freq = batch_frequency
         self.max_images = max_images
         self.logger_log_images = {
-            pl.loggers.TestTubeLogger: self._testtube,
+            pl.loggers.tensorboard.TensorBoardLogger: self._testtube,
         }
         self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
@@ -416,7 +430,8 @@ class ImageLogger(Callback):
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
         if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-            self.log_img(pl_module, batch, batch_idx, split="train")
+            pass
+            #self.log_img(pl_module, batch, batch_idx, split="train")
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
         if not self.disabled and pl_module.global_step > 0:
@@ -641,7 +656,7 @@ if __name__ == "__main__":
         logdir = os.path.join(opt.logdir, nowname)
 
     ckptdir = os.path.join(logdir, "checkpoints")
-    cfgdir = os.path.join(logdir, "configs")
+    cfgdir = os.path.join(logdir, "configs/")
     seed_everything(opt.seed)
 
     try:
@@ -669,6 +684,9 @@ if __name__ == "__main__":
         # model
         model = instantiate_from_config(config.model)
         model.cpu()
+        
+        #print(model)
+        
 
         if not opt.finetune_from == "":
             rank_zero_print(f"Attempting to load state from {opt.finetune_from}")
@@ -681,15 +699,58 @@ if __name__ == "__main__":
             in_filters_load = old_state["model.diffusion_model.input_blocks.0.0.weight"]
             new_state = model.state_dict()
             in_filters_current = new_state["model.diffusion_model.input_blocks.0.0.weight"]
-            if in_filters_current.shape != in_filters_load.shape:
+            # Rishi: line below adjusted and line 701 was commented out
+            if not opt.depth_cond and in_filters_current.shape != in_filters_load.shape:
                 rank_zero_print("Modifying weights to double number of input channels")
                 keys_to_change = [
                     "model.diffusion_model.input_blocks.0.0.weight",
-                    "model_ema.diffusion_modelinput_blocks00weight",
+                    #"model_ema.diffusion_model.input_blocks.0.0.weight",
                 ]
                 scale = 1e-8
+                #print(old_state.keys())
                 for k in keys_to_change:
                     old_state[k] = modify_weights(old_state[k], scale=scale)
+            
+            ## Rishi: following lines were added for depth model
+            layers_to_change = [
+                "model.diffusion_model.input_blocks.1.1.proj_in.weight",
+                "model.diffusion_model.input_blocks.1.1.proj_out.weight",
+                "model.diffusion_model.input_blocks.2.1.proj_in.weight",
+                "model.diffusion_model.input_blocks.2.1.proj_out.weight",
+                "model.diffusion_model.input_blocks.4.1.proj_in.weight",
+                "model.diffusion_model.input_blocks.4.1.proj_out.weight",
+                "model.diffusion_model.input_blocks.5.1.proj_in.weight",
+                "model.diffusion_model.input_blocks.5.1.proj_out.weight",
+                "model.diffusion_model.input_blocks.7.1.proj_in.weight",
+                "model.diffusion_model.input_blocks.7.1.proj_out.weight",
+                "model.diffusion_model.input_blocks.8.1.proj_in.weight",
+                "model.diffusion_model.input_blocks.8.1.proj_out.weight",
+                "model.diffusion_model.middle_block.1.proj_in.weight",
+                "model.diffusion_model.middle_block.1.proj_out.weight",
+                "model.diffusion_model.output_blocks.3.1.proj_in.weight",
+                "model.diffusion_model.output_blocks.3.1.proj_out.weight",
+                "model.diffusion_model.output_blocks.4.1.proj_in.weight",
+                "model.diffusion_model.output_blocks.4.1.proj_out.weight",
+                "model.diffusion_model.output_blocks.5.1.proj_in.weight",
+                "model.diffusion_model.output_blocks.5.1.proj_out.weight",
+                "model.diffusion_model.output_blocks.6.1.proj_in.weight",
+                "model.diffusion_model.output_blocks.6.1.proj_out.weight",
+                "model.diffusion_model.output_blocks.7.1.proj_in.weight",
+                "model.diffusion_model.output_blocks.7.1.proj_out.weight",
+                "model.diffusion_model.output_blocks.8.1.proj_in.weight",
+                "model.diffusion_model.output_blocks.8.1.proj_out.weight",
+                "model.diffusion_model.output_blocks.9.1.proj_in.weight",
+                "model.diffusion_model.output_blocks.9.1.proj_out.weight",
+                "model.diffusion_model.output_blocks.10.1.proj_in.weight",
+                "model.diffusion_model.output_blocks.10.1.proj_out.weight",
+                "model.diffusion_model.output_blocks.11.1.proj_in.weight",
+                "model.diffusion_model.output_blocks.11.1.proj_out.weight"
+            ]
+            if opt.depth_cond:
+                for l in layers_to_change:
+                    old_state[l] = modify_proj_weights(old_state[l])
+
+            #print(old_state.keys())
 
             m, u = model.load_state_dict(old_state, strict=False)
             if len(m) > 0:
@@ -713,15 +774,15 @@ if __name__ == "__main__":
                     "id": nowname,
                 }
             },
-            "testtube": {
-                "target": "pytorch_lightning.loggers.TestTubeLogger",
+            "tensorboard": {
+                "target": "pytorch_lightning.loggers.TensorBoardLogger",
                 "params": {
-                    "name": "testtube",
                     "save_dir": logdir,
+                    "name": "tensorboard",
                 }
-            },
+            }	
         }
-        default_logger_cfg = default_logger_cfgs["testtube"]
+        default_logger_cfg = default_logger_cfgs["tensorboard"]
         if "logger" in lightning_config:
             logger_cfg = lightning_config.logger
         else:
@@ -738,6 +799,7 @@ if __name__ == "__main__":
                 "filename": "{epoch:06}",
                 "verbose": True,
                 "save_last": True,
+                "every_n_epochs": 2,
             }
         }
         if hasattr(model, "monitor"):
@@ -821,10 +883,12 @@ if __name__ == "__main__":
             del callbacks_cfg['ignore_keys_callback']
 
         trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
+        #print(trainer_kwargs["callbacks"])
         if not "plugins" in trainer_kwargs:
             trainer_kwargs["plugins"] = list()
         if not lightning_config.get("find_unused_parameters", True):
             from pytorch_lightning.plugins import DDPPlugin
+            #from pytorch_lightning.strategies import DDPStrategy
             trainer_kwargs["plugins"].append(DDPPlugin(find_unused_parameters=False))
         if MULTINODE_HACKS:
             # disable resume from hpc ckpts
@@ -835,6 +899,7 @@ if __name__ == "__main__":
             from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
             setattr(CheckpointConnector, "hpc_resume_path", None)
 
+        #print(trainer_opt, trainer_kwargs)
         trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
         trainer.logdir = logdir  ###
 
@@ -898,6 +963,7 @@ if __name__ == "__main__":
         # run
         if opt.train:
             try:
+                print(model.device)
                 trainer.fit(model, data)
             except Exception:
                 if not opt.debug:

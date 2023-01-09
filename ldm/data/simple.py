@@ -7,11 +7,12 @@ from pathlib import Path
 import json
 from PIL import Image
 from torchvision import transforms
+from torchvision.utils import save_image
 from einops import rearrange
 from ldm.util import instantiate_from_config
 from datasets import load_dataset
 
-def make_multi_folder_data(paths, caption_files=None, **kwargs):
+def make_multi_folder_data(paths, caption_files=None, vp_files=None, depth_path=None, **kwargs):
     """Make a concat dataset from multiple folders
     Don't suport captions yet
 
@@ -25,22 +26,28 @@ def make_multi_folder_data(paths, caption_files=None, **kwargs):
         for folder_path, repeats in paths.items():
             list_of_paths.extend([folder_path]*repeats)
         paths = list_of_paths
-
-    if caption_files is not None:
-        datasets = [FolderData(p, caption_file=c, **kwargs) for (p, c) in zip(paths, caption_files)]
+    if caption_files is not None and vp_files is not None and depth_path is not None:
+        datasets = [FolderData(p, caption_file=c, vp_file=v, depth=depth_path[0], **kwargs) for (p, c, v) in zip(paths, caption_files, vp_files)]
+    elif caption_files is not None and vp_files is not None:
+        datasets = [FolderData(p, caption_file=c, vp_file=v, **kwargs) for (p, c, v) in zip(paths, caption_files, vp_files)]
     else:
         datasets = [FolderData(p, **kwargs) for p in paths]
     return torch.utils.data.ConcatDataset(datasets)
+    
+def rearr(x):
+    return rearrange(x * 2. - 1., 'c h w -> h w c')
 
 class FolderData(Dataset):
     def __init__(self,
         root_dir,
         caption_file=None,
+        vp_file=None,
+        depth=None,
         image_transforms=[],
         ext="jpg",
         default_caption="",
         postprocess=None,
-        return_paths=False,
+        return_paths=True,
         ) -> None:
         """Create a dataset from a folder of images.
         If you pass in a root directory it will be searched for images
@@ -49,10 +56,13 @@ class FolderData(Dataset):
         self.root_dir = Path(root_dir)
         self.default_caption = default_caption
         self.return_paths = return_paths
-        if isinstance(postprocess, DictConfig):
-            postprocess = instantiate_from_config(postprocess)
+        #if isinstance(postprocess, DictConfig):
+        #    postprocess = instantiate_from_config(postprocess)
         self.postprocess = postprocess
         if caption_file is not None:
+            #import os
+            #print(os.listdir("../../"))
+            #print(os.listdir("../../VP_data/"))
             with open(caption_file, "rt") as f:
                 ext = Path(caption_file).suffix.lower()
                 if ext == ".json":
@@ -66,6 +76,14 @@ class FolderData(Dataset):
             self.captions = captions
         else:
             self.captions = None
+            
+        if vp_file is not None:
+            with open(vp_file, "rt") as f:
+                vps_data = json.load(f)
+                self.vps_data = vps_data
+                
+        self.depth_path = depth
+
 
         if not isinstance(ext, (tuple, list, ListConfig)):
             ext = [ext]
@@ -76,8 +94,10 @@ class FolderData(Dataset):
             self.paths.extend(list(self.root_dir.rglob(f"*.{e}")))
         if isinstance(image_transforms, ListConfig):
             image_transforms = [instantiate_from_config(tt) for tt in image_transforms]
-        image_transforms.extend([transforms.ToTensor(),
-                                 transforms.Lambda(lambda x: rearrange(x * 2. - 1., 'c h w -> h w c'))])
+        
+        self.tform2 = transforms.Compose([transforms.ToTensor(),
+                                 transforms.Lambda(rearr)])
+        self.flip = transforms.RandomHorizontalFlip(1.0)
         image_transforms = transforms.Compose(image_transforms)
         self.tform = image_transforms
 
@@ -92,9 +112,37 @@ class FolderData(Dataset):
         data = {}
         if self.captions is not None:
             chosen = list(self.captions.keys())[index]
+            chosen_name_only = chosen[:chosen.find(".jpg")]
+            #print(chosen_name_only)
+            #print(chosen)
             caption = self.captions.get(chosen, None)
+            vps_dat = self.vps_data.get(chosen, None)
+            #print(vps_dat)
+            #print("----")
+            if vps_dat is None:
+                vps_dat = self.vps_data.get(chosen_name_only, None)
+                if vps_dat is None:
+                    vps_dat = [[256.,512.],[256.,0.]]
+            vps = torch.tensor(vps_dat)
             if caption is None:
                 caption = self.default_caption
+                
+            if self.depth_path is not None:
+                depth_fname = chosen_name_only.replace("imag", "dpth") + ".npz"
+                depth_data = np.load(self.depth_path+depth_fname)
+                depth_data = torch.tensor(depth_data["depth"][:,:,0])[None, None,:,:]
+                depth_data = torch.nn.functional.interpolate(
+                    depth_data,
+                    size=(64,64),
+                    mode="bilinear",
+                    align_corners=False
+                )
+                depth_data[depth_data > 0] = 1 / (depth_data[depth_data > 0])
+                depth_min, depth_max = torch.amin(depth_data, dim=[1, 2, 3], keepdim=True), torch.amax(depth_data, dim=[1, 2, 3], keepdim=True)
+                #print(depth_min, depth_max)
+                depth_data = 2. * (depth_data - depth_min) / (depth_max - depth_min + 0.001) - 1.
+                data["depth"] = depth_data
+                
             filename = self.root_dir/chosen
         else:
             filename = self.paths[index]
@@ -103,22 +151,45 @@ class FolderData(Dataset):
             data["path"] = str(filename)
 
         im = Image.open(filename)
-        im = self.process_im(im)
+        im, flip = self.process_im(im)
         data["image"] = im
+
+        if flip:
+            data["depth"] = self.flip(data["depth"])
+        
 
         if self.captions is not None:
             data["txt"] = caption
         else:
             data["txt"] = self.default_caption
+            
+        if flip:
+            orig_x = vps[:,0].clone()
+            vps[:,0] = 512 - orig_x
+
+        if len(vps) < 3:
+            new_vps = torch.zeros((3-len(vps),2))
+            vps = torch.cat([vps,new_vps], axis=0)
+        #print(vps)
+        data["vps"] = vps
+        
+        #print(data["depth"].shape)
 
         if self.postprocess is not None:
             data = self.postprocess(data)
-
+        #print(data["vps"])
         return data
 
     def process_im(self, im):
         im = im.convert("RGB")
-        return self.tform(im)
+        im = self.tform(im)
+        #im.save("preflip"+str(index)+".png")
+        flip = False
+        if np.random.random() < 0.5:
+            im = self.flip(im)
+            flip = True
+        #im.save("postflip"+str(index)+".png")
+        return self.tform2(im), flip
 
 def hf_dataset(
     name,

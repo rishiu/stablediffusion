@@ -1,4 +1,5 @@
 logs/
+lightning_logs/
 dump/
 outputs/
 flagged/
@@ -8,6 +9,7 @@ __pycache__
 *.ckpt
 *.mp4
 *.pth
+*.pt
 .ipynb_checkpoints/
 src/
 logs
@@ -15,3 +17,5 @@ logs
 im-examples/
 datasets
 scratch/
+*.jpg
+*.png

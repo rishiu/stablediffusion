@@ -10,29 +10,29 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pytorch_lightning as pl
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, StepLR
 from einops import rearrange, repeat
 from contextlib import contextmanager, nullcontext
 from functools import partial
 import itertools
 from tqdm import tqdm
-from torchvision.utils import make_grid
+from torchvision.utils import make_grid, save_image
 from pytorch_lightning.utilities.distributed import rank_zero_only
 from omegaconf import ListConfig
 
-from ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config
+from ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config, pos_enc
 from ldm.modules.ema import LitEma
 from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianDistribution
 from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, AutoencoderKL
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.modules.attention import CrossAttention
-
+from ldm.modules.losses.perspective import perspective_loss
 
 __conditioning_keys__ = {'concat': 'c_concat',
                          'crossattn': 'c_crossattn',
                          'adm': 'y'}
-
+                         
 
 def disabled_train(self, mode=True):
     """Overwrite model.train with this function to make sure train/eval mode
@@ -75,7 +75,7 @@ class DDPM(pl.LightningModule):
                  learn_logvar=False,
                  logvar_init=0.,
                  make_it_fit=False,
-                 ucg_training=None,
+                 ucg_training=None
                  ):
         super().__init__()
         assert parameterization in ["eps", "x0"], 'currently only supporting "eps" and "x0"'
@@ -115,7 +115,7 @@ class DDPM(pl.LightningModule):
         self.loss_type = loss_type
 
         self.learn_logvar = learn_logvar
-        self.logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))
+        self.logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,)).to(self.device)
         if self.learn_logvar:
             self.logvar = nn.Parameter(self.logvar, requires_grad=True)
 
@@ -371,6 +371,11 @@ class DDPM(pl.LightningModule):
         loss = loss_simple + self.original_elbo_weight * loss_vlb
 
         loss_dict.update({f'{log_prefix}/loss': loss})
+        
+        #for IX in range(model_out.shape[0]):
+        #    img = model_out[IX]
+            # TODO: Check if correct (if only on last step and only on one image) and find way to include vanishing point
+        #    loss += perspective_loss(img, vanishing_point)
 
         return loss, loss_dict
 
@@ -496,8 +501,10 @@ class LatentDiffusion(DDPM):
                  cond_stage_forward=None,
                  conditioning_key=None,
                  scale_factor=1.0,
+                 perspective_weight=0.001,
                  scale_by_std=False,
                  unet_trainable=True,
+                 depth_stage_config=None,
                  *args, **kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -527,6 +534,12 @@ class LatentDiffusion(DDPM):
         self.cond_stage_forward = cond_stage_forward
         self.clip_denoised = False
         self.bbox_tokenizer = None
+        self.perspective_weight = perspective_weight
+
+        # Depth conditioning
+        self.depth_model = None
+        if depth_stage_config is not None:
+            self.depth_model = instantiate_from_config(depth_stage_config)
 
         self.restarted_from_ckpt = False
         if ckpt_path is not None:
@@ -719,11 +732,21 @@ class LatentDiffusion(DDPM):
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
                   cond_key=None, return_original_cond=False, bs=None, return_x=False):
         x = super().get_input(batch, k)
+        #import time
+        #save_image((x + 1.0) / 2.0, "gt_image"+str(time.time())+".png")
+        #print(batch["image"].shape)
+        #print(x.shape)
         if bs is not None:
             x = x[:bs]
         x = x.to(self.device)
         encoder_posterior = self.encode_first_stage(x)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
+        
+        #print(z.shape)
+        vps = batch["vps"]
+
+        #print(dist)
+        #print(dist.shape) 
 
         if self.model.conditioning_key is not None:
             if cond_key is None:
@@ -752,13 +775,55 @@ class LatentDiffusion(DDPM):
                 ckey = __conditioning_keys__[self.model.conditioning_key]
                 c = {ckey: c, 'pos_x': pos_x, 'pos_y': pos_y}
 
+            #vp_c = torch.tile(pos_enc(vps[0][0]).unsqueeze(1).unsqueeze(0), (1,1,768))
+
+            #c = [c, vp_c]
         else:
             c = None
             xc = None
             if self.use_positional_encodings:
                 pos_x, pos_y = self.compute_latent_shifts(batch)
                 c = {'pos_x': pos_x, 'pos_y': pos_y}
-        out = [z, c]
+             
+        c_cat = []
+        if self.depth_model is not None:
+            #depth_data = batch["depth"][0]
+            depth_data = self.depth_model(x)
+            #print(depth_datam.shape)
+            #print("****")
+            depth_data = torch.nn.functional.interpolate(
+                depth_data,
+                size=z.shape[2:],
+                mode="bilinear",
+                align_corners=False
+            )
+            #print(depth_datam.shape)
+            #print("99")
+            depth_min, depth_max = torch.amin(depth_data, dim=[1, 2, 3], keepdim=True), torch.amax(depth_data, dim=[1, 2, 3], keepdim=True)
+            depth_data = 2. * (depth_data - depth_min) / (depth_max - depth_min + 0.001) - 1.
+            
+            #import matplotlib.pyplot as plt
+            #import time
+            #ti = time.time()
+            #print(depth_data.shape)
+            #fig, ax = plt.subplots(2)
+            #im = ax[0].imshow(depth_data.cpu().numpy()[0][0])
+            #plt.colorbar(im)
+            #im2 = ax[1].imshow(depth_datam.cpu().numpy()[0][0])
+            #plt.colorbar(im2)
+            #plt.savefig("test_depth"+str(ti)+".jpg")
+            #plt.close()
+            c_cat.append(depth_data)
+
+        #print(batch)
+        fname = batch["path"]
+        #print(vps)     
+        #print("----")
+        if len(c_cat) > 0:
+            cond = {"c_concat": c_cat, "c_crossattn": [c]}
+        else:
+            cond = c
+        out = [z, cond, vps, x, fname]
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z)
             out.extend([x, xrec])
@@ -869,11 +934,11 @@ class LatentDiffusion(DDPM):
             return self.first_stage_model.encode(x)
 
     def shared_step(self, batch, **kwargs):
-        x, c = self.get_input(batch, self.first_stage_key)
-        loss = self(x, c)
+        x, c, vps, gtx, fname = self.get_input(batch, self.first_stage_key)
+        loss = self(x, c, vps, gtx, fname)
         return loss
 
-    def forward(self, x, c, *args, **kwargs):
+    def forward(self, x, c, vps, gtx, fname, *args, **kwargs):
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
         if self.model.conditioning_key is not None:
             assert c is not None
@@ -882,7 +947,7 @@ class LatentDiffusion(DDPM):
             if self.shorten_cond_schedule:  # TODO: drop this option
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
-        return self.p_losses(x, c, t, *args, **kwargs)
+        return self.p_losses(x, c, t, vps, gtx, fname, *args, **kwargs)
 
     def _rescale_annotations(self, bboxes, crop_coordinates):  # TODO: move to dataset
         def rescale_bbox(bbox):
@@ -904,7 +969,7 @@ class LatentDiffusion(DDPM):
                 cond = [cond]
             key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
             cond = {key: cond}
-
+        
         if hasattr(self, "split_input_params"):
             assert len(cond) == 1  # todo can only deal with one conditioning atm
             assert not return_ids
@@ -990,8 +1055,10 @@ class LatentDiffusion(DDPM):
             x_recon = fold(o) / normalization
 
         else:
+            #print("whoa")
+            #print(cond["c_concat"][0].shape)
+            #print(cond["c_crossattn"][0].shape)
             x_recon = self.model(x_noisy, t, **cond)
-
         if isinstance(x_recon, tuple) and not return_ids:
             return x_recon[0]
         else:
@@ -1015,11 +1082,27 @@ class LatentDiffusion(DDPM):
         kl_prior = normal_kl(mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0)
         return mean_flat(kl_prior) / np.log(2.0)
 
-    def p_losses(self, x_start, cond, t, noise=None):
+    def p_losses(self, x_start, cond, t, vps, gtx, fname, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
+        #input_img = torch.clamp((self.decode_first_stage(x_start) + 1.0 / 2.0), min=0.0, max=1.0)
+
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         model_output = self.apply_model(x_noisy, t, cond)
+        noisy_img = torch.clamp((self.decode_first_stage(x_noisy) + 1.0 / 2.0), min=0.0, max=1.0)
+        #save_image(noisy_img, "noisy"+log_id+".png")
+        
+        end_t = torch.tensor([0], device="cuda")
+        ex_noisy = self.q_sample(x_start=x_start, t=end_t, noise=noise)
+        #print(end_t)
+        model_end_output = self.apply_model(ex_noisy, end_t, cond)
 
+
+        out_img = torch.clamp((self.decode_first_stage(self.predict_start_from_noise(x_noisy, t=t, noise=model_output)) + 1.0) / 2.0, min=0.0, max=1.0)
+        #out_img = torch.clamp((self.decode_first_stage(model_output) + 1.0) / 2.0, min=0.0, max=1.0)
+        gt_img = torch.clamp((gtx + 1.0) / 2.0, min=0.0, max=1.0)
+        #if torch.max(out_img) <= 0:
+        #    print("All black image!")
+	
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
 
@@ -1032,6 +1115,25 @@ class LatentDiffusion(DDPM):
 
         loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3])
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
+            
+
+        pers_loss = perspective_loss(out_img, gt_img, vps) * self.perspective_weight
+        
+
+        #if pers_loss > 2:
+        #    print(pers_loss, torch.linalg.norm(gt - out_img))
+        if False:
+            import time
+            fname = fname[0]
+            fname = fname.replace("/","")
+            ti = time.time()
+            depth_img = cond["c_concat"][0]
+            depth_img = depth_img[0,0]
+            print(t)
+            save_image(gt_img, "train_outputs/test/gt/gt"+fname+".png")
+            save_image(out_img, "train_outputs/test/output/output"+fname+".png")
+            save_image(noisy_img, "train_outputs/test/input/input"+fname+".png")
+        #print(e-s)
 
         logvar_t = self.logvar[t].to(self.device)
         loss = loss_simple / torch.exp(logvar_t) + logvar_t
@@ -1042,10 +1144,14 @@ class LatentDiffusion(DDPM):
 
         loss = self.l_simple_weight * loss.mean()
 
+        loss += pers_loss
+
         loss_vlb = self.get_loss(model_output, target, mean=False).mean(dim=(1, 2, 3))
         loss_vlb = (self.lvlb_weights[t] * loss_vlb).mean()
         loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
         loss += (self.original_elbo_weight * loss_vlb)
+
+        loss_dict.update({f'{prefix}/loss_persp': pers_loss})
         loss_dict.update({f'{prefix}/loss': loss})
 
         return loss, loss_dict
@@ -1273,18 +1379,36 @@ class LatentDiffusion(DDPM):
     def log_images(self, batch, N=8, n_row=4, sample=True, ddim_steps=200, ddim_eta=1., return_keys=None,
                    quantize_denoised=True, inpaint=True, plot_denoise_rows=False, plot_progressive_rows=True,
                    plot_diffusion_rows=True, unconditional_guidance_scale=1., unconditional_guidance_label=None,
-                   use_ema_scope=True,
+                   use_ema_scope=False,
                    **kwargs):
         ema_scope = self.ema_scope if use_ema_scope else nullcontext
         use_ddim = ddim_steps is not None
 
         log = dict()
-        z, c, x, xrec, xc = self.get_input(batch, self.first_stage_key,
+        z, c, vps, _, _,  x, xrec, xc = self.get_input(batch, self.first_stage_key,
                                            return_first_stage_outputs=True,
                                            force_c_encode=True,
                                            return_original_cond=True,
                                            bs=N)
+
+        c_cat = []
+        if self.depth_model is not None:
+            depth_data = self.depth_model(x)
+            depth_data = torch.nn.functional.interpolate(
+                depth_data,
+                size=z.shape[2:],
+                mode="bicubic",
+                align_corners=False
+            )
+            depth_min, depth_max = torch.amin(depth_data, dim=[1, 2, 3], keepdim=True), torch.amax(depth_data, dim=[1, 2, 3], keepdim=True)
+            depth_data = 2. * (depth_data - depth_min) / (depth_max - depth_min + 0.001) - 1.
+            c_cat.append(depth_data)
+
+        if len(c_cat) > 0:
+            c = {"c_concat": c_cat, "c_crossattn": [c]}
+
         N = min(x.shape[0], N)
+        print(N)
         n_row = min(x.shape[0], n_row)
         log["inputs"] = x
         log["reconstruction"] = xrec
@@ -1347,6 +1471,20 @@ class LatentDiffusion(DDPM):
 
         if unconditional_guidance_scale > 1.0:
             uc = self.get_unconditional_conditioning(N, unconditional_guidance_label)
+            c_cat = []
+            if self.depth_model is not None:
+                depth_data = self.depth_model(x)
+                depth_data = torch.nn.functional.interpolate(
+                    depth_data,
+                    size=z.shape[2:],
+                    mode="bicubic",
+                    align_corners=False
+                )
+                depth_min, depth_max = torch.amin(depth_data, dim=[1, 2, 3], keepdim=True), torch.amax(depth_data, dim=[1, 2, 3], keepdim=True)
+                depth_data = 2. * (depth_data - depth_min) / (depth_max - depth_min + 0.001) - 1.
+                c_cat.append(depth_data)
+            if len(c_cat) > 0:
+                uc = {"c_concat": c_cat, "c_crossattn": [uc]}
             # uc = torch.zeros_like(c)
             with ema_scope("Sampling with classifier-free guidance"):
                 samples_cfg, _ = self.sample_log(cond=c, batch_size=N, ddim=use_ddim,

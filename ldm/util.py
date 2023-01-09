@@ -1,11 +1,180 @@
 import importlib
 
 import torch
+import torch.nn as nn
 from torch import optim
 import numpy as np
+import math
 
 from inspect import isfunction
 from PIL import Image, ImageDraw, ImageFont
+
+## Perspective Loss
+class Sobel(nn.Module):
+	def __init__(self):
+		super().__init__()
+		self.filter = nn.Conv2d(in_channels=1, out_channels=2, kernel_size=3, stride=1, padding="same", padding_mode="replicate", bias=False)
+
+		Gx = torch.tensor([[1.0, 0.0, -1.0], [2.0, 0.0, -2.0], [1.0, 0.0, -1.0]])
+		Gy = torch.tensor([[1.0, 2.0, 1.0], [0.0, 0.0, 0.0], [-1.0, -2.0, -1.0]])
+		G = torch.cat([Gx.unsqueeze(0), Gy.unsqueeze(0)], 0)
+		G = G.unsqueeze(1)
+		self.filter.weight = nn.Parameter(G, requires_grad=False)
+
+	def forward(self, img):
+		x = self.filter(img)
+		return x
+		
+def get_perp_line(d):
+	perp_d = torch.stack([d[1], -d[0]])
+
+	return perp_d
+	
+def pos_enc(pos, L=10):
+    lin = 2**torch.arange(0, L)
+
+    x, y = pos
+    x /= 512.
+    y /= 512.
+    enc = []
+    for l in range(L):
+        enc.extend([torch.sin(math.pi * (2**l) * x), torch.cos(math.pi * (2**l) * y)])
+    return torch.tensor(enc, device="cuda")
+	
+def _local_maxima_1d(x):
+	midpoints = torch.empty(x.shape[0] // 2, dtype=torch.long, device="cuda")
+	left_edges = torch.empty(x.shape[0] // 2, dtype=torch.long, device="cuda")
+	right_edges = torch.empty(x.shape[0] // 2, dtype=torch.long, device="cuda")
+	m = 0
+
+	i = 1
+	i_max = x.shape[0] - 1
+	
+	while i < i_max:
+		if x[i-1] < x[i]:
+			i_ahead = i + 1
+
+			while i_ahead < i_max and x[i_ahead] == x[i]:
+				i_ahead += 1
+
+			if x[i_ahead] < x[i]:
+				left_edges[m] = i
+				right_edges[m] = i_ahead - 1
+				midpoints[m] = (left_edges[m] + right_edges[m]) // 2
+				m += 1
+				i = i_ahead
+		i += 1
+
+	midpoints.resize_(m)
+	left_edges.resize_(m)
+	right_edges.resize_(m)
+
+	return midpoints, left_edges, right_edges
+	
+def _local_maxima_1d_vec(x):
+    x_t1 = x[1:-1]-x[:-2]
+    x_t2 = x[1:-1]-x[2:]
+    
+    out = torch.where(x_t1>0,1,0)
+    out2 = torch.where(x_t2>0,out,0)
+    
+    midpoints = (torch.nonzero(out2)+1).reshape(-1)
+    
+    return midpoints
+
+def _peak_prominences(x, peaks, wlen):
+	prominences = torch.empty(peaks.shape[0], dtype=torch.float, device="cuda")
+	left_bases = torch.empty(peaks.shape[0], dtype=torch.float, device="cuda")
+	right_bases = torch.empty(peaks.shape[0], dtype=torch.float, device="cuda")
+
+	for peak_nr in range(peaks.shape[0]):
+		peak = peaks[peak_nr]
+		i_min = 0
+		i_max = x.shape[0] - 1
+		if not i_min <= peak_nr <= i_max:
+			print("error!")
+
+		if wlen >= 2:
+			i_min = max(peak - wlen // 2, i_min)
+			i_max = min(peak + wlen // 2, i_max)
+
+		i = left_bases[peak_nr] = peak.clone()
+		left_min = x[peak]
+
+		while i_min <= i and x[i] <= x[peak]:
+			if x[i] < left_min:
+				left_min = x[i]
+				left_bases[peak_nr] = i
+			i -= 1
+
+		i = right_bases[peak_nr] = peak.clone()
+		right_min = x[peak]
+
+		while i <= i_max and x[i] <= x[peak]:
+			if x[i] < right_min:
+				right_min = x[i]
+				right_bases[peak_nr] = i
+			i += 1
+
+		prominences[peak_nr] = x[peak] - max(left_min, right_min)
+
+	return prominences, left_bases, right_bases
+	
+def _peak_prominences_vec(x, peaks):
+    prominences = torch.empty(peaks.shape[0], dtype=torch.float, device="cuda")
+    for peak_nr in range(peaks.shape[0]):
+        peak = peaks[peak_nr]
+        x_val = x[peak]
+        larger_idx = torch.nonzero(torch.where(x > x_val, 1, 0)).reshape(-1)
+
+        if larger_idx.shape[0] == 0:
+            min_l = torch.min(x[:peak])
+            min_r = torch.min(x[peak:])
+        else:
+            left_large = torch.max(torch.where(larger_idx < peak, larger_idx, 0))
+            right_large = torch.min(torch.where(larger_idx > peak, larger_idx, x.shape[0]-1))
+
+            min_l = torch.min(x[left_large:peak])
+            min_r = torch.min(x[peak+1:right_large+1])
+		
+        prominences[peak_nr] = x_val - max(min_l, min_r)
+    return prominences
+    
+
+def find_peaks(x, prominence=1, wlen=-1):
+    #import time
+    #s1 = time.time()
+    #peaks2, left_edges, right_edges = _local_maxima_1d(x)
+    #e1 = time.time()
+    #s2 = time.time()
+    peaks = _local_maxima_1d_vec(x)
+    #e2 = time.time()
+	
+    #print(e1-s1,e2-s2)
+    #print("***")
+	#print(peaks.shape, peaks2.shape)
+
+    pmin, pmax = prominence, None
+
+    #s3 = time.time()
+    #prominences, left_bases, right_bases = _peak_prominences(x, peaks, wlen)
+    #e3 = time.time()
+    
+    #s4 = time.time()
+    prominences = _peak_prominences_vec(x, peaks)
+    #e4 = time.time()
+    #print(prominences, prominences2)
+    #print(e3-s3)
+    #print(e4-s4)
+    #print("^^^^")
+
+    keep = (pmin <= prominences)
+
+    peaks = peaks[keep]
+    prominences = prominences[keep]
+
+    return peaks, prominences
+
 
 
 def log_txt_as_img(wh, xc, size=10):
@@ -79,7 +248,7 @@ def instantiate_from_config(config):
     return get_obj_from_str(config["target"])(**config.get("params", dict()))
 
 
-def get_obj_from_str(string, reload=False):
+def get_obj_from_str(string, reload=True):
     module, cls = string.rsplit(".", 1)
     if reload:
         module_imp = importlib.import_module(module)
