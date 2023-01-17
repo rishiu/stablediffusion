@@ -19,6 +19,7 @@ from tqdm import tqdm
 from torchvision.utils import make_grid, save_image
 from pytorch_lightning.utilities.distributed import rank_zero_only
 from omegaconf import ListConfig
+import bitsandbytes as bnb
 
 from ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config, pos_enc
 from ldm.modules.ema import LitEma
@@ -505,6 +506,7 @@ class LatentDiffusion(DDPM):
                  scale_by_std=False,
                  unet_trainable=True,
                  depth_stage_config=None,
+                 depth_cond=False,
                  *args, **kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -538,6 +540,7 @@ class LatentDiffusion(DDPM):
 
         # Depth conditioning
         self.depth_model = None
+        self.depth_cond = depth_cond
         if depth_stage_config is not None:
             self.depth_model = instantiate_from_config(depth_stage_config)
 
@@ -625,6 +628,14 @@ class LatentDiffusion(DDPM):
         else:
             raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}' not yet implemented")
         return self.scale_factor * z
+
+    def on_after_backward(self):
+        params = self.state_dict()
+        for k, v in params.items():
+            pass
+            #if v.grad is not None:
+            #print(k)
+            #print(v.grad)
 
     def get_learned_conditioning(self, c):
         if self.cond_stage_forward is None:
@@ -786,37 +797,48 @@ class LatentDiffusion(DDPM):
                 c = {'pos_x': pos_x, 'pos_y': pos_y}
              
         c_cat = []
-        if self.depth_model is not None:
-            #depth_data = batch["depth"][0]
-            depth_data = self.depth_model(x)
-            #print(depth_datam.shape)
-            #print("****")
-            depth_data = torch.nn.functional.interpolate(
-                depth_data,
-                size=z.shape[2:],
-                mode="bilinear",
-                align_corners=False
-            )
-            #print(depth_datam.shape)
-            #print("99")
-            depth_min, depth_max = torch.amin(depth_data, dim=[1, 2, 3], keepdim=True), torch.amax(depth_data, dim=[1, 2, 3], keepdim=True)
-            depth_data = 2. * (depth_data - depth_min) / (depth_max - depth_min + 0.001) - 1.
+        if self.depth_cond:
+            depth_datas = batch["depth"][0]
+            c_cat.append(depth_datas)
+    #     if self.depth_model is not None:
+    #     #     #depth_data = batch["depth"][0]
+    #         depth_data = self.depth_model(x)
+    # #     #print(depth_datam.shape)
+    # #     #print("****")
+    #         depth_data = torch.nn.functional.interpolate(
+    #             depth_data,
+    #             size=z.shape[2:],
+    #             mode="bilinear",
+    #             align_corners=False
+    #         )
+    # #     #print(depth_datam.shape)
+    # #     #print("99")
+    #         depth_min, depth_max = torch.amin(depth_data, dim=[1, 2, 3], keepdim=True), torch.amax(depth_data, dim=[1, 2, 3], keepdim=True)
+    #         depth_data = 2. * (depth_data - depth_min) / (depth_max - depth_min + 0.001) - 1.
             
-            #import matplotlib.pyplot as plt
-            #import time
-            #ti = time.time()
-            #print(depth_data.shape)
-            #fig, ax = plt.subplots(2)
-            #im = ax[0].imshow(depth_data.cpu().numpy()[0][0])
-            #plt.colorbar(im)
-            #im2 = ax[1].imshow(depth_datam.cpu().numpy()[0][0])
-            #plt.colorbar(im2)
-            #plt.savefig("test_depth"+str(ti)+".jpg")
-            #plt.close()
-            c_cat.append(depth_data)
+    #         import matplotlib.pyplot as plt
+    #         import time
+    #         ti = time.time()
+    #         print(depth_data.shape)
+    #         fig, ax = plt.subplots(2)
+    #         im = ax[0].imshow(depth_data.cpu().numpy()[0][0])
+    #         plt.colorbar(im)
+    #         im2 = ax[1].imshow(depth_datas.cpu().numpy()[0][0])
+    #         plt.colorbar(im2)
+    #         plt.savefig("test_depth"+str(ti)+".jpg")
+    #         plt.close()
 
         #print(batch)
         fname = batch["path"]
+
+        # import matplotlib.pyplot as plt
+        # plt.figure()
+        # im = plt.imshow(depth_data.clone().cpu().numpy()[0][0])
+        # plt.colorbar(im)
+        # fname_new = fname[0]
+        # fname_new = fname_new.replace("/","")
+        # plt.savefig("train_outputs/test_depth_"+fname_new+".jpg")
+
         #print(vps)     
         #print("----")
         if len(c_cat) > 0:
@@ -840,8 +862,8 @@ class LatentDiffusion(DDPM):
                 z = torch.argmax(z.exp(), dim=1).long()
             z = self.first_stage_model.quantize.get_codebook_entry(z, shape=None)
             z = rearrange(z, 'b h w c -> b c h w').contiguous()
-
-        z = 1. / self.scale_factor * z
+        with torch.set_grad_enabled(True):
+            z = 1. / self.scale_factor * z
 
         if hasattr(self, "split_input_params"):
             if self.split_input_params["patch_distributed_vq"]:
@@ -1088,14 +1110,17 @@ class LatentDiffusion(DDPM):
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         model_output = self.apply_model(x_noisy, t, cond)
-        noisy_img = torch.clamp((self.decode_first_stage(x_noisy) + 1.0 / 2.0), min=0.0, max=1.0)
+        #noisy_img = torch.clamp((self.decode_first_stage(x_noisy) + 1.0 / 2.0), min=0.0, max=1.0)
         #save_image(noisy_img, "noisy"+log_id+".png")
         
-        end_t = torch.tensor([0], device="cuda")
-        ex_noisy = self.q_sample(x_start=x_start, t=end_t, noise=noise)
+        #end_t = torch.tensor([0], device="cuda")
+        #ex_noisy = self.q_sample(x_start=x_start, t=end_t, noise=noise)
         #print(end_t)
-        model_end_output = self.apply_model(ex_noisy, end_t, cond)
+        #model_end_output = self.apply_model(ex_noisy, end_t, cond)
+        #est_start = self.predict_start_from_noise(x_noisy, t=t, noise=model_output)
+        #est_img = self.decode_first_stage(est_start)
 
+        #out_img = torch.clamp((est_img+1.0)/2.0, min=0.0, max=1.0)
 
         out_img = torch.clamp((self.decode_first_stage(self.predict_start_from_noise(x_noisy, t=t, noise=model_output)) + 1.0) / 2.0, min=0.0, max=1.0)
         #out_img = torch.clamp((self.decode_first_stage(model_output) + 1.0) / 2.0, min=0.0, max=1.0)
@@ -1118,8 +1143,10 @@ class LatentDiffusion(DDPM):
             
 
         pers_loss = perspective_loss(out_img, gt_img, vps) * self.perspective_weight
-        
 
+        #print("Loss:")
+        #print(pers_loss.requires_grad)
+        
         #if pers_loss > 2:
         #    print(pers_loss, torch.linalg.norm(gt - out_img))
         if False:
@@ -1132,7 +1159,7 @@ class LatentDiffusion(DDPM):
             print(t)
             save_image(gt_img, "train_outputs/test/gt/gt"+fname+".png")
             save_image(out_img, "train_outputs/test/output/output"+fname+".png")
-            save_image(noisy_img, "train_outputs/test/input/input"+fname+".png")
+            #save_image(noisy_img, "train_outputs/test/input/input"+fname+".png")
         #print(e-s)
 
         logvar_t = self.logvar[t].to(self.device)
@@ -1553,7 +1580,7 @@ class LatentDiffusion(DDPM):
         if self.learn_logvar:
             print('Diffusion model optimizing logvar')
             params.append(self.logvar)
-        opt = torch.optim.AdamW(params, lr=lr)
+        opt = bnb.optim.AdamW8bit(params, lr=lr)
         if self.use_scheduler:
             assert 'target' in self.scheduler_config
             scheduler = instantiate_from_config(self.scheduler_config)

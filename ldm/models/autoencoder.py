@@ -9,6 +9,7 @@ from ldm.modules.diffusionmodules.model import Encoder, Decoder
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 
 from ldm.util import instantiate_from_config
+from ldm.modules.diffusionmodules.util import checkpoint
 
 
 class VQModel(pl.LightningModule):
@@ -311,9 +312,12 @@ class AutoencoderKL(pl.LightningModule):
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
     def init_from_ckpt(self, path, ignore_keys=list()):
+        print("oh ok")
         sd = torch.load(path, map_location="cpu")["state_dict"]
         keys = list(sd.keys())
         for k in keys:
+            #if "post_quant_conv" in k:
+            print(k)
             for ik in ignore_keys:
                 if k.startswith(ik):
                     print("Deleting key {} from state_dict.".format(k))
@@ -328,9 +332,10 @@ class AutoencoderKL(pl.LightningModule):
         return posterior
 
     def decode(self, z):
-        z = self.post_quant_conv(z)
-        dec = self.decoder(z)
-        return dec
+        with torch.set_grad_enabled(True):
+            z = self.post_quant_conv(z)
+            z = self.decoder(z)
+        return z
 
     def forward(self, input, sample_posterior=True):
         posterior = self.encode(input)

@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.0e-6
+  base_learning_rate: 1.0e-5
   target: ldm.models.diffusion.ddpm.LatentDiffusion
   params:
     linear_start: 0.00085
@@ -17,11 +17,12 @@ model:
     monitor: val/loss_simple_ema
     use_ema: False
     parameterization: "eps"
-    perspective_weight: 0.02
-    depth_stage_config:
-      target: ldm.modules.midas.api.MiDaSInference
-      params:
-        model_type: "dpt_hybrid"
+    perspective_weight: 0
+    depth_cond: True
+    #depth_stage_config:
+    #  target: ldm.modules.midas.api.MiDaSInference
+    #  params:
+    #    model_type: "dpt_hybrid"
 
     scheduler_config: # 10000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
@@ -111,11 +112,11 @@ data:
 
 
 lightning:
-  find_unused_parameters: True
+  find_unused_parameters: False
 
   modelcheckpoint:
     params:
-      every_n_epochs: 1
+      every_n_train_steps: 500
       save_top_k: -1
       monitor: null
 
@@ -141,6 +142,6 @@ lightning:
     benchmark: True
     num_sanity_val_steps: 5
     accumulate_grad_batches: 16
-    log_every_n_steps: 25
+    log_every_n_steps: 10
     max_epochs: 6
     profiler: "simple"

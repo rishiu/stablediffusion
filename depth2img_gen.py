@@ -112,7 +112,7 @@ def get_samples(batch, model, sampler, seed=50, n_samples=1, scale=5.0, save_img
         #if save_img >= 0:
         #    depth_img = torch.permute(depth_data[0], (1,2,0)).cpu().numpy()
         #    depth_im = Image.fromarray((((depth_img[:,:,0] + 1.0) / 2.0) * 255).astype(np.uint8))
-        #    depth_im.save("../../gen_data/ft_l2_all_4_1e-4/depth/"+str(save_img)+".jpg")
+        #    depth_im.save("../../gen_data/generated_data/EXTRA_OUT_SYNTHIA/"+name+"/depth/"+str(save_img)+".jpg")
         depth_data = torch.nn.functional.interpolate(
                 depth_data,
                 size=z.shape[2:],
@@ -141,7 +141,7 @@ def get_samples(batch, model, sampler, seed=50, n_samples=1, scale=5.0, save_img
             output_img = torch.permute(result[0], (1,2,0)).cpu().numpy()
             output_img = (output_img * 255).astype(np.uint8)
             im = Image.fromarray(output_img)
-            im.save("../../gen_data/CURRENT_FINAL_OUT/"+str(save_img)+str(name)+".jpg")
+            im.save("../../gen_data/generated_data/EXTRA_OUT_SYNTHIA/"+name+"/img/"+str(save_img)+".jpg")
             #fig, ax = plt.subplots(2)
             #ax[0].imshow(input_img)
             #ax[1].imshow(output_img)
@@ -325,6 +325,26 @@ def main():
         type=str,
         help="file with vpts per image"
     )
+    parser.add_argument(
+        "--start_idx",
+        type=int,
+        help="file with vpts per image"
+    )
+    parser.add_argument(
+        "--end_idx",
+        type=int,
+        help="file with vpts per image"
+    )
+    parser.add_argument(
+        "--name",
+        type=str,
+        help="file with vpts per image"
+    )
+    parser.add_argument(
+        "--fix_size",
+        action="store_true",
+        help="file with vpts per image"
+    )
 
     opt = parser.parse_args()
     seed_everything(opt.seed)
@@ -334,7 +354,7 @@ def main():
 
 
     base_config = OmegaConf.load(f"{opt.config}")
-    base_model = load_model_from_config(base_config, f"{opt.ckpt}", fix_size=False)
+    base_model = load_model_from_config(base_config, f"{opt.ckpt}", fix_size=opt.fix_size)
 
     #ft_config = OmegaConf.load(f"{opt.config2}")
     #ft_model = load_model_from_config(ft_config, f"{opt.ckpt2}", fix_size=False)
@@ -424,6 +444,8 @@ def main():
     #         ft_losses.append(ft_loss)
     midas_trafo = AddMiDaS(model_type="dpt_hybrid")
     for idx, index in enumerate(tqdm(all_data.keys())):
+        if not (opt.start_idx <= idx < opt.end_idx):
+            continue
         datapoint = all_data[index]
 
         depth_fname = datapoint[0]
@@ -437,6 +459,8 @@ def main():
 
         depth_arr = np.load(opt.data_dir+depth_fname)
 
+        depth_arr = cv2.resize(depth_arr, (512,512))
+
         batch = {
             "image": image,
             "txt": opt.n_samples * [prompt],
@@ -446,7 +470,7 @@ def main():
         batch["image"] = repeat(batch["image"].to(device=device), '1 ... -> n ...', n=opt.n_samples)
         batch["midas_in"] = torch.from_numpy(depth_arr[None,None,:,:]).to(device=device, dtype=torch.float32)
 
-        get_samples(batch, base_model, base_sampler, seed=opt.seed, n_samples=opt.n_samples, scale=opt.scale, save_img=idx, name="2ep")
+        get_samples(batch, base_model, base_sampler, seed=opt.seed, n_samples=opt.n_samples, scale=opt.scale, save_img=int(index), name=opt.name)
         #ft_loss = get_samples(batch, ft_model, ft_sampler, seed=opt.seed, n_samples=opt.n_samples, scale=opt.scale, save_img=idx, name="4ep")
         #if ft_loss >= 0:
         #    ft_losses.append(ft_loss)

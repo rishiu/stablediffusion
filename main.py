@@ -617,6 +617,10 @@ if __name__ == "__main__":
     parser = get_parser()
     parser = Trainer.add_argparse_args(parser)
 
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+
+
     opt, unknown = parser.parse_known_args()
     if opt.name and opt.resume:
         raise ValueError(
@@ -799,7 +803,6 @@ if __name__ == "__main__":
                 "filename": "{epoch:06}",
                 "verbose": True,
                 "save_last": True,
-                "every_n_epochs": 2,
             }
         }
         if hasattr(model, "monitor"):
@@ -899,7 +902,7 @@ if __name__ == "__main__":
             from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
             setattr(CheckpointConnector, "hpc_resume_path", None)
 
-        #print(trainer_opt, trainer_kwargs)
+        print(trainer_opt, trainer_kwargs)
         trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
         trainer.logdir = logdir  ###
 
